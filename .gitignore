@@ -17,3 +17,9 @@
 # Scraped data
 /data
 
+# Temporary backup data
+*.tar.gz
+
+# Direnv for credentials
+.envrc
+

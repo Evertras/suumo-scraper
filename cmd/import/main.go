@@ -42,9 +42,13 @@ func main() {
 
 	ctx := context.TODO()
 
-	err = filepath.Walk("./data", func(path string, info os.FileInfo, err error) error {
-		log.Println("Loading", path)
-		f, err := os.Open(path)
+	err = filepath.Walk("./data/listings", func(p string, info os.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+
+		log.Println("Loading", p)
+		f, err := os.Open(p)
 
 		if err != nil {
 			return fmt.Errorf("os.Open: %w", err)

@@ -1,17 +1,18 @@
 package suumo
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"sync"
+	"time"
 
 	colly "github.com/gocolly/colly/v2"
+
+	"github.com/evertras/suumo-scraper/internal/geocode"
 )
 
-const (
-	urlTokyo = "https://suumo.jp/chintai/tokyo/city/"
-)
-
-func ListWards() ([]Ward, error) {
+func ListWards(prefecture Prefecture) ([]Ward, error) {
 	wards := make([]Ward, 0)
 
 	c := colly.NewCollector()
@@ -25,12 +26,13 @@ func ListWards() ([]Ward, error) {
 				wards = append(wards, Ward{
 					Name: name,
 					Code: code,
+					Prefecture: prefecture,
 				})
 			}
 		})
 	})
 
-	err := c.Visit(urlTokyo)
+	err := c.Visit(fmt.Sprintf("https://suumo.jp/chintai/%s/city/", prefecture.URLPath))
 
 	if err != nil {
 		return nil, err
@@ -39,15 +41,44 @@ func ListWards() ([]Ward, error) {
 	return wards, nil
 }
 
-func WardListings(ward Ward) ([]Listing, error) {
-	listings := make([]Listing, 0)
-	c := colly.NewCollector()
+type Geocoder interface {
+	GetNeighborhoodLocation(ctx context.Context, neighborhood string) (*geocode.Location, error)
+}
 
-	c.OnRequest(func(r *colly.Request) {
-		log.Printf("Visiting page %s - %s", r.URL.Query().Get("page"), r.URL)
+func WardListings(ctx context.Context, geocoder Geocoder, ward Ward) ([]Listing, error) {
+	var mu sync.Mutex
+	listings := make([]Listing, 0)
+	linksCollector := colly.NewCollector()
+	completed := 0
+	totalRequests := 0
+
+	detailCollector := colly.NewCollector(
+		colly.Async(),
+	)
+	detailCollector.Limit(&colly.LimitRule{
+		DomainGlob:  "*suumo.jp*",
+		Parallelism: 5,
+		Delay:       time.Millisecond * 50,
 	})
 
-	c.OnHTML(".pagination", func(e *colly.HTMLElement) {
+	detailCollector.OnRequest(func(r *colly.Request) {
+		mu.Lock()
+		totalRequests++
+		mu.Unlock()
+	})
+
+	detailCollector.OnResponse(func(r *colly.Response) {
+		mu.Lock()
+		completed++
+		log.Printf("    Listings > %d / %d", completed, totalRequests)
+		mu.Unlock()
+	})
+
+	linksCollector.OnRequest(func(r *colly.Request) {
+		log.Printf("%s - Visiting page %s - %s", ward.Name, r.URL.Query().Get("page"), r.URL)
+	})
+
+	linksCollector.OnHTML(".pagination", func(e *colly.HTMLElement) {
 		e.ForEach("p.pagination-parts:last-of-type a", func(i int, a *colly.HTMLElement) {
 			if a.Text == "次へ" {
 				a.Request.Visit(a.Attr("href"))
@@ -55,7 +86,16 @@ func WardListings(ward Ward) ([]Listing, error) {
 		})
 	})
 
-	c.OnHTML(".l-cassetteitem > li", func(li *colly.HTMLElement) {
+	linksCollector.OnHTML(
+		"tr.js-cassette_link td:last-of-type a",
+		func(a *colly.HTMLElement) {
+			//link := a.Attr("href")
+
+			//detailCollector.Visit("https://suumo.jp" + link)
+		},
+	)
+
+	linksCollector.OnHTML(".l-cassetteitem > li", func(li *colly.HTMLElement) {
 		name := li.ChildText(".cassetteitem_content-title")
 		neighborhood := li.ChildText(".cassetteitem_detail-col1")
 		yearsRaw := li.ChildText(".cassetteitem_detail-col3 > div:first-of-type")
@@ -93,6 +133,16 @@ func WardListings(ward Ward) ([]Listing, error) {
 				panic(fmt.Sprintf("bad square meters: %q %v", rawSquareMeters, err))
 			}
 
+			loc, err := geocoder.GetNeighborhoodLocation(ctx, neighborhood)
+
+			if err != nil {
+				log.Fatalf("Failed to get location for neighborhood %q: %v", neighborhood, err)
+			}
+
+			if loc == nil {
+				log.Fatal(loc)
+			}
+
 			listing := Listing{
 				Title:            name,
 				Neighborhood:     neighborhood,
@@ -102,19 +152,28 @@ func WardListings(ward Ward) ([]Listing, error) {
 				Layout:           layout,
 				SquareMeters:     parsedSquareMeters,
 				Ward:             ward,
+				Location:         loc,
 			}
 
+			mu.Lock()
 			listings = append(listings, listing)
+			mu.Unlock()
 		})
 	})
 
-	url := fmt.Sprintf("https://suumo.jp/jj/chintai/ichiran/FR301FC001/?ar=030&bs=040&ta=13&sc=%s&cb=0.0&ct=9999999&mb=0&mt=9999999&et=9999999&cn=9999999&shkr1=03&shkr2=03&shkr3=03&shkr4=03&sngz=&po1=25&pc=10&page=1", ward.Code)
+	url := fmt.Sprintf(
+		"https://suumo.jp/jj/chintai/ichiran/FR301FC001/?ar=030&bs=040&ta=%s&sc=%s&cb=0.0&ct=9999999&mb=0&mt=9999999&et=9999999&cn=9999999&shkr1=03&shkr2=03&shkr3=03&shkr4=03&sngz=&po1=25&pc=10&page=1",
+		ward.Prefecture.Code,
+		ward.Code,
+	)
 
-	err := c.Visit(url)
+	err := linksCollector.Visit(url)
 
 	if err != nil {
 		return nil, err
 	}
+
+	detailCollector.Wait()
 
 	return listings, nil
 }
