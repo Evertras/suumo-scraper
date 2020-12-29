@@ -14,8 +14,8 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# Scraped data
-/data
+# Scraped data for listings... we want to check in geocoding data
+/data/listings
 
 # Temporary backup data
 *.tar.gz
