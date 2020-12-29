@@ -52,7 +52,7 @@ func (i *Importer) ImportListings(ctx context.Context, listings []suumo.Listing)
 	defer bulk.closeWithLoggedError(ctx)
 
 	for i, entry := range listings {
-		err = bulk.add(ctx, entry)
+		err = bulk.add(ctx, toEntry(entry))
 		if err != nil {
 			return fmt.Errorf("bulk.add #%d: %w", i, err)
 		}
